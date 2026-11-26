@@ -3,20 +3,101 @@
 #ifdef _WIN32
 /* Windows-реализация */
 #include <windows.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Построить командную строку из argv с учётом кавычек */
+static char *build_cmdline(const char *const argv[]) {
+    size_t total = 1;
+    for (int i = 0; argv[i]; i++) {
+        total += strlen(argv[i]) * 2 + 3;
+    }
+    char *cmd = (char *)malloc(total);
+    if (!cmd) return NULL;
+
+    char *p = cmd;
+    for (int i = 0; argv[i]; i++) {
+        if (i > 0) *p++ = ' ';
+        const char *s = argv[i];
+        int need_quotes = (*s == '\0') || strpbrk(s, " \t\"") != NULL;
+        if (need_quotes) {
+            *p++ = '"';
+            for (; *s; s++) {
+                int backslashes = 0;
+                while (*s == '\\') { backslashes++; *p++ = *s++; }
+                if (*s == '"') {
+                    for (int k = 0; k <= backslashes; k++) *p++ = '\\';
+                    *p++ = '"';
+                } else {
+                    for (int k = 0; k < backslashes; k++) *p++ = '\\';
+                    if (*s) *p++ = *s;
+                }
+            }
+            *p++ = '"';
+        } else {
+            strcpy(p, s);
+            p += strlen(s);
+        }
+    }
+    *p = '\0';
+    return cmd;
+}
 
 int pl_start(const char *const argv[], pl_process *proc) {
-    /* TODO: реализовать CreateProcess */
-    return -1;
+    if (!argv || !argv[0] || !proc) return -1;
+
+    char *cmd = build_cmdline(argv);
+    if (!cmd) return -1;
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof si);
+    si.cb = sizeof si;
+
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0,
+                             NULL, NULL, &si, &pi);
+    free(cmd);
+
+    if (!ok) return -1;   /* GetLastError() == 2 — файл не найден */
+
+    CloseHandle(pi.hThread);
+    proc->handle = (intptr_t)pi.hProcess;
+    proc->pid = (long)pi.dwProcessId;
+    return 0;
 }
 
 int pl_wait(pl_process *proc, int *exit_code) {
-    /* TODO: реализовать WaitForSingleObject + GetExitCodeProcess */
-    return -1;
+    if (!proc || !exit_code) return -1;
+
+    HANDLE h = (HANDLE)proc->handle;
+    DWORD r = WaitForSingleObject(h, INFINITE);
+    if (r != WAIT_OBJECT_0) return -1;
+
+    DWORD code = 0;
+    if (!GetExitCodeProcess(h, &code)) return -1;
+    *exit_code = (int)code;
+
+    CloseHandle(h);
+    proc->handle = 0;
+    return 0;
 }
 
 int pl_poll(pl_process *proc, int *exit_code) {
-    /* TODO: реализовать WaitForSingleObject с таймаутом 0 */
-    return -1;
+    if (!proc || !exit_code) return -1;
+
+    HANDLE h = (HANDLE)proc->handle;
+    DWORD r = WaitForSingleObject(h, 0);
+
+    if (r == WAIT_TIMEOUT) return 0;       /* ещё работает */
+    if (r != WAIT_OBJECT_0) return -1;
+
+    DWORD code = 0;
+    if (!GetExitCodeProcess(h, &code)) return -1;
+    *exit_code = (int)code;
+
+    CloseHandle(h);
+    proc->handle = 0;
+    return 1;   /* завершился */
 }
 
 #else
